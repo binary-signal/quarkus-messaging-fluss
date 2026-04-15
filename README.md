@@ -78,6 +78,7 @@ mp.messaging.outgoing.my-channel.table=events
 | `bootstrap-servers` | String | `localhost:9123` | Both      | Fluss cluster bootstrap address             |
 | `database`          | String | `fluss`          | Both      | Fluss database name                         |
 | `table`             | String | *(required)*     | Both      | Fluss table name                            |
+| `offset`            | String | `latest`         | Incoming  | Starting position: `latest` or `earliest`   |
 | `poll-timeout`      | int    | `100`            | Incoming  | Poll timeout in milliseconds                |
 | `batch-size`        | int    | `100`            | Outgoing  | Number of records before flushing           |
 | `columns`           | String |                  | Incoming  | Comma-separated column names for projection |

@@ -3,10 +3,13 @@ package io.quarkus.smallrye.reactivemessaging.fluss;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.fluss.client.Connection;
 import org.apache.fluss.client.ConnectionFactory;
+import org.apache.fluss.client.admin.OffsetSpec;
 import org.apache.fluss.client.table.Table;
 import org.apache.fluss.client.table.scanner.ScanRecord;
 import org.apache.fluss.client.table.scanner.log.LogScanner;
@@ -39,6 +42,7 @@ public class FlussIncomingChannel {
         String tableName = config.getValue("table", String.class);
         int pollTimeoutMs =
                 config.getOptionalValue("poll-timeout", Integer.class).orElse(100);
+        String offsetReset = config.getOptionalValue("offset", String.class).orElse("latest");
 
         this.pollTimeout = Duration.ofMillis(pollTimeoutMs);
         this.tablePath = TablePath.of(database, tableName);
@@ -61,10 +65,30 @@ public class FlussIncomingChannel {
         });
         this.scanner = scanBuilder.createLogScanner();
 
-        // Subscribe to all buckets from the beginning
+        // Subscribe to all buckets from the configured starting position
         int numBuckets = table.getTableInfo().getNumBuckets();
-        for (int i = 0; i < numBuckets; i++) {
-            scanner.subscribeFromBeginning(i);
+        if ("earliest".equalsIgnoreCase(offsetReset)) {
+            for (int i = 0; i < numBuckets; i++) {
+                scanner.subscribeFromBeginning(i);
+            }
+        } else {
+            List<Integer> buckets = new ArrayList<>();
+            for (int i = 0; i < numBuckets; i++) {
+                buckets.add(i);
+            }
+            try {
+                Map<Integer, Long> latestOffsets = connection
+                        .getAdmin()
+                        .listOffsets(tablePath, buckets, new OffsetSpec.LatestSpec())
+                        .all()
+                        .get();
+                latestOffsets.forEach(scanner::subscribe);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException("Interrupted while fetching latest offsets", e);
+            } catch (ExecutionException e) {
+                throw new RuntimeException("Failed to fetch latest offsets", e.getCause());
+            }
         }
 
         this.stream = Multi.createBy()
@@ -84,7 +108,8 @@ public class FlussIncomingChannel {
         List<Message<?>> messages = new ArrayList<>();
         for (TableBucket bucket : scanRecords.buckets()) {
             for (ScanRecord record : scanRecords.records(bucket)) {
-                FlussMessageMetadata metadata = new FlussMessageMetadata(tablePath, bucket, record.logOffset());
+                FlussMessageMetadata metadata =
+                        new FlussMessageMetadata(tablePath, bucket, record.logOffset(), record.getChangeType());
                 messages.add(new FlussMessage(record.getRow(), metadata));
             }
         }

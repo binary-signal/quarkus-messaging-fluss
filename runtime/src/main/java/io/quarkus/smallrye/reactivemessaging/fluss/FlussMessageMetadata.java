@@ -2,6 +2,7 @@ package io.quarkus.smallrye.reactivemessaging.fluss;
 
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TablePath;
+import org.apache.fluss.record.ChangeType;
 
 /**
  * Metadata associated with a message received from a Fluss table.
@@ -11,11 +12,13 @@ public class FlussMessageMetadata {
     private final TablePath tablePath;
     private final TableBucket tableBucket;
     private final long offset;
+    private final ChangeType changeType;
 
-    public FlussMessageMetadata(TablePath tablePath, TableBucket tableBucket, long offset) {
+    public FlussMessageMetadata(TablePath tablePath, TableBucket tableBucket, long offset, ChangeType changeType) {
         this.tablePath = tablePath;
         this.tableBucket = tableBucket;
         this.offset = offset;
+        this.changeType = changeType;
     }
 
     public TablePath getTablePath() {
@@ -34,11 +37,15 @@ public class FlussMessageMetadata {
         return offset;
     }
 
+    public ChangeType getChangeType() {
+        return changeType;
+    }
+
     @Override
     public String toString() {
         return "FlussMessageMetadata{" + "tablePath="
                 + tablePath + ", bucket="
                 + tableBucket.getBucket() + ", offset="
-                + offset + '}';
+                + offset + ", changeType=" + changeType + '}';
     }
 }
