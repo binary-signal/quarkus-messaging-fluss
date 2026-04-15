@@ -6,7 +6,7 @@ connector for [Apache Fluss](https://fluss.apache.org/) (Incubating), a
 streaming storage system built for real-time analytics.
 
 Use standard `@Incoming` and `@Outgoing` annotations to consume from and produce
-to Fluss Log Tables.
+to Fluss Log Tables and Primary Key Tables.
 
 ## Prerequisites
 
@@ -72,23 +72,23 @@ mp.messaging.outgoing.my-channel.table=events
 
 ### Configuration Reference
 
-| Property            | Type   | Default          | Direction | Description                                 |
-|---------------------|--------|------------------|-----------|---------------------------------------------|
-| `connector`         | String |                  | Both      | Must be `smallrye-fluss`                    |
-| `bootstrap-servers` | String | `localhost:9123` | Both      | Fluss cluster bootstrap address             |
-| `database`          | String | `fluss`          | Both      | Fluss database name                         |
-| `table`             | String | *(required)*     | Both      | Fluss table name                            |
-| `offset`            | String | `latest`         | Incoming  | Starting position: `latest` or `earliest`   |
-| `poll-timeout`      | int    | `100`            | Incoming  | Poll timeout in milliseconds                |
-| `batch-size`        | int    | `100`            | Outgoing  | Number of records before flushing           |
-| `columns`           | String |                  | Incoming  | Comma-separated column names for projection |
+| Property            | Type   | Default          | Direction | Description                                             |
+|---------------------|--------|------------------|-----------|---------------------------------------------------------|
+| `connector`         | String |                  | Both      | Must be `smallrye-fluss`                                |
+| `bootstrap-servers` | String | `localhost:9123` | Both      | Fluss cluster bootstrap address                         |
+| `database`          | String | `fluss`          | Both      | Fluss database name                                     |
+| `table`             | String | *(required)*     | Both      | Fluss table name                                        |
+| `offset`            | String | `full`           | Incoming  | Startup mode: `full`, `earliest`, `latest`, `timestamp` |
+| `offset.timestamp`  | long   |                  | Incoming  | Epoch millis, required when `offset=timestamp`          |
+| `columns`           | String |                  | Incoming  | Comma-separated column names for projection             |
+| `poll-timeout`      | int    | `100`            | Incoming  | Poll timeout in milliseconds                            |
+| `batch-size`        | int    | `100`            | Outgoing  | Number of records before flushing                       |
 
 ## Usage
 
 ### Consuming messages
 
-Incoming messages carry an `InternalRow` payload representing a row from a Fluss
-Log Table.
+Incoming messages carry an `InternalRow` payload representing a row from a Fluss Table.
 
 ```java
 import jakarta.enterprise.context.ApplicationScoped;
@@ -111,8 +111,8 @@ public class FlussConsumer {
 
 ### Accessing Fluss metadata
 
-Each message includes `FlussMessageMetadata` with the table path, bucket, and
-offset.
+Each message includes `FlussMessageMetadata` with the table path, bucket, offset
+and change type.
 
 ```java
 import jakarta.enterprise.context.ApplicationScoped;
@@ -133,6 +133,7 @@ public class FlussConsumerWithMetadata {
             System.out.println("Table: " + meta.getTablePath());
             System.out.println("Bucket: " + meta.getBucketId());
             System.out.println("Offset: " + meta.getOffset());
+            System.out.println("ChangeType:" + meta.getChangeType());
         });
         return message.ack();
     }
@@ -199,6 +200,29 @@ public class FlussProcessor {
 }
 ```
 
+### Start reading position
+
+The `offset` property controls where the connector begins reading when it
+starts.
+This applies to both Log Tables and Primary Key Tables.
+
+| Mode        | Description                                                                                                                                                                                                       |
+|-------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `full`      | **Default.** For log tables, reads from the earliest offset. For PK tables, reads from the earliest changelog offset (**full snapshot read is not yet supported — for now this behaves the same as `earliest`**). |
+| `earliest`  | Starts reading from the earliest available offset.                                                                                                                                                                |
+| `latest`    | Starts reading from the latest offset — only new records arriving after startup will be consumed.                                                                                                                 |
+| `timestamp` | Starts reading from the offset closest to a given timestamp. Requires `offset.timestamp` (epoch milliseconds).                                                                                                    |
+
+Examples:
+
+```properties
+# Read only new records
+mp.messaging.incoming.events.offset=latest
+# Read from a specific point in time
+mp.messaging.incoming.events.offset=timestamp
+mp.messaging.incoming.events.offset.timestamp=1713200000000
+```
+
 ### Column projection
 
 Reduce network overhead by fetching only the columns you need:
@@ -215,8 +239,10 @@ starting at 0 in projection order).
 ## How It Works
 
 - **Incoming:** The connector creates a `LogScanner` that subscribes to all
-  buckets of the configured table from the beginning. It polls for `ScanRecords`
-  on a worker thread and emits each row as a `Message<InternalRow>`.
+  buckets of the configured table at the position determined by the `offset`
+  property (`full`, `earliest`, `latest`, or `timestamp`). It polls for
+  `ScanRecords` on a worker thread and emits each row as a
+  `Message<InternalRow>`.
 
 - **Outgoing:** The connector creates an `AppendWriter` for the configured Log
   Table. Each incoming message payload (`InternalRow`/`GenericRow`) is appended
@@ -236,9 +262,10 @@ If you are coming from Kafka, note these key differences:
 
 ## Current Limitations
 
-- **Log Tables only** -- Primary Key Tables (upsert/lookup) are not yet
-  supported
-- **No consumer offset tracking** -- the scanner always reads from the beginning
+- **No full snapshot read for PK Tables** -- the `full` offset mode does not yet
+  read the initial snapshot for Primary Key Tables; it falls back to `earliest`
+  (changelog only)
+- **No consumer offset tracking** -- offsets are not persisted between restarts
 - **No health checks** -- MicroProfile Health integration is not yet implemented
 - **No dev services** -- no automatic Fluss container startup in dev mode
 

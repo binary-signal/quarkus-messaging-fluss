@@ -42,7 +42,7 @@ public class FlussIncomingChannel {
         String tableName = config.getValue("table", String.class);
         int pollTimeoutMs =
                 config.getOptionalValue("poll-timeout", Integer.class).orElse(100);
-        String offsetReset = config.getOptionalValue("offset", String.class).orElse("latest");
+        String offsetMode = config.getOptionalValue("offset", String.class).orElse("full");
 
         this.pollTimeout = Duration.ofMillis(pollTimeoutMs);
         this.tablePath = TablePath.of(database, tableName);
@@ -67,28 +67,23 @@ public class FlussIncomingChannel {
 
         // Subscribe to all buckets from the configured starting position
         int numBuckets = table.getTableInfo().getNumBuckets();
-        if ("earliest".equalsIgnoreCase(offsetReset)) {
-            for (int i = 0; i < numBuckets; i++) {
-                scanner.subscribeFromBeginning(i);
-            }
-        } else {
-            List<Integer> buckets = new ArrayList<>();
-            for (int i = 0; i < numBuckets; i++) {
-                buckets.add(i);
-            }
-            try {
-                Map<Integer, Long> latestOffsets = connection
-                        .getAdmin()
-                        .listOffsets(tablePath, buckets, new OffsetSpec.LatestSpec())
-                        .all()
-                        .get();
-                latestOffsets.forEach(scanner::subscribe);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new RuntimeException("Interrupted while fetching latest offsets", e);
-            } catch (ExecutionException e) {
-                throw new RuntimeException("Failed to fetch latest offsets", e.getCause());
-            }
+        switch (offsetMode.toLowerCase()) {
+            case "full":
+            case "earliest":
+                for (int i = 0; i < numBuckets; i++) {
+                    scanner.subscribeFromBeginning(i);
+                }
+                break;
+            case "latest":
+                subscribeBucketsAtOffsets(numBuckets, new OffsetSpec.LatestSpec());
+                break;
+            case "timestamp":
+                long timestamp = config.getValue("offset.timestamp", Long.class);
+                subscribeBucketsAtOffsets(numBuckets, new OffsetSpec.TimestampSpec(timestamp));
+                break;
+            default:
+                throw new IllegalArgumentException("Invalid offset mode: '" + offsetMode
+                        + "'. Supported values: full, earliest, latest, timestamp");
         }
 
         this.stream = Multi.createBy()
@@ -98,6 +93,26 @@ public class FlussIncomingChannel {
                 .runSubscriptionOn(Infrastructure.getDefaultWorkerPool())
                 .onItem()
                 .disjoint();
+    }
+
+    private void subscribeBucketsAtOffsets(int numBuckets, OffsetSpec offsetSpec) {
+        List<Integer> buckets = new ArrayList<>();
+        for (int i = 0; i < numBuckets; i++) {
+            buckets.add(i);
+        }
+        try {
+            Map<Integer, Long> offsets = connection
+                    .getAdmin()
+                    .listOffsets(tablePath, buckets, offsetSpec)
+                    .all()
+                    .get();
+            offsets.forEach(scanner::subscribe);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Interrupted while fetching offsets", e);
+        } catch (ExecutionException e) {
+            throw new RuntimeException("Failed to fetch offsets", e.getCause());
+        }
     }
 
     private List<Message<?>> pollRecords() {
